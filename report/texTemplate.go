@@ -29,11 +29,11 @@ const defaultTemplate = `
 \maketitle
 \begin{center}
 [[range .Panels]][[if .IsSingleStat]]\begin{minipage}{0.3\textwidth}
-\includegraphics[width=\textwidth]{image[[.Id]]}
+\includegraphics[width=\textwidth]{[[.Title]]-[[.Id]]}
 \end{minipage}
 [[else]]\par
 \vspace{0.5cm}
-\includegraphics[width=\textwidth]{image[[.Id]]}
+\includegraphics[width=\textwidth]{[[.Title]]-[[.Id]]}
 \par
 \vspace{0.5cm}
 [[end]][[end]]

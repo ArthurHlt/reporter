@@ -70,8 +70,9 @@ type Row struct {
 // and then enriched (sanitize fields for TeX consumption and add VarialbeValues)
 type Dashboard struct {
 	Title          string
+	UID            string
 	Description    string
-	VariableValues string //Not present in the Grafana JSON structure. Enriched data passed used by the Tex templating
+	VariableValues string // Not present in the Grafana JSON structure. Enriched data passed used by the Tex templating
 	Rows           []Row
 	Panels         []Panel
 }
@@ -81,6 +82,22 @@ type dashContainer struct {
 	Meta      struct {
 		Slug string
 	}
+}
+
+type DashboardSearch struct {
+	ID          int           `json:"id"`
+	UID         string        `json:"uid"`
+	Title       string        `json:"title"`
+	URI         string        `json:"uri"`
+	URL         string        `json:"url"`
+	Slug        string        `json:"slug"`
+	Type        string        `json:"type"`
+	Tags        []interface{} `json:"tags"`
+	IsStarred   bool          `json:"isStarred"`
+	FolderID    int           `json:"folderId,omitempty"`
+	FolderUID   string        `json:"folderUid,omitempty"`
+	FolderTitle string        `json:"folderTitle,omitempty"`
+	FolderURL   string        `json:"folderUrl,omitempty"`
 }
 
 // NewDashboard creates Dashboard from Grafana's internal JSON dashboard definition

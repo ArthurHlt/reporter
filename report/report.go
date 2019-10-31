@@ -39,12 +39,14 @@ type Report interface {
 }
 
 type report struct {
-	gClient     grafana.Client
-	time        grafana.TimeRange
-	texTemplate string
-	dashName    string
-	tmpDir      string
-	dashTitle   string
+	gClient      grafana.Client
+	time         grafana.TimeRange
+	texTemplate  string
+	dashName     string
+	tmpDir       string
+	dashTitle    string
+	imagesFolder string
+	noPdf        bool
 }
 
 const (
@@ -55,11 +57,11 @@ const (
 
 // New creates a new Report.
 // texTemplate is the content of a LaTex template file. If empty, a default tex template is used.
-func New(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool) Report {
-	return new(g, dashName, time, texTemplate, gridLayout)
+func New(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool, imagesFolder string, noPdf bool) Report {
+	return newReport(g, dashName, time, texTemplate, gridLayout, imagesFolder, noPdf)
 }
 
-func new(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool) *report {
+func newReport(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool, imagesFolder string, noPdf bool) *report {
 	if texTemplate == "" {
 		if gridLayout {
 			texTemplate = defaultGridTemplate
@@ -69,7 +71,7 @@ func new(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate 
 
 	}
 	tmpDir := filepath.Join("tmp", uuid.New())
-	return &report{g, time, texTemplate, dashName, tmpDir, ""}
+	return &report{g, time, texTemplate, dashName, tmpDir, "", imagesFolder, noPdf}
 }
 
 // Generate returns the report.pdf file.  After reading this file it should be Closed()
@@ -80,6 +82,7 @@ func (rep *report) Generate() (pdf io.ReadCloser, err error) {
 		err = fmt.Errorf("error fetching dashboard %v: %v", rep.dashName, err)
 		return
 	}
+	rep.dashName = dash.UID
 	rep.dashTitle = dash.Title
 
 	err = rep.renderPNGsParallel(dash)
@@ -87,18 +90,21 @@ func (rep *report) Generate() (pdf io.ReadCloser, err error) {
 		err = fmt.Errorf("error rendering PNGs in parralel for dash %+v: %v", dash, err)
 		return
 	}
-	err = rep.generateTeXFile(dash)
-	if err != nil {
-		err = fmt.Errorf("error generating TeX file for dash %+v: %v", dash, err)
-		return
+	if !rep.noPdf {
+		err = rep.generateTeXFile(dash)
+		if err != nil {
+			err = fmt.Errorf("error generating TeX file for dash %+v: %v", dash, err)
+			return
+		}
+		pdf, err = rep.runLaTeX()
 	}
-	pdf, err = rep.runLaTeX()
+
 	return
 }
 
 // Title returns the dashboard title parsed from the dashboard definition
 func (rep *report) Title() string {
-	//lazy fetch if Title() is called before Generate()
+	// lazy fetch if Title() is called before Generate()
 	if rep.dashTitle == "" {
 		dash, err := rep.gClient.GetDashboard(rep.dashName)
 		if err != nil {
@@ -111,7 +117,7 @@ func (rep *report) Title() string {
 
 // Clean deletes the temporary directory used during report generation
 func (rep *report) Clean() {
-	err := os.RemoveAll(rep.tmpDir)
+	err := os.RemoveAll("tmp")
 	if err != nil {
 		log.Println("Error cleaning up tmp dir:", err)
 	}
@@ -130,20 +136,20 @@ func (rep *report) texPath() string {
 }
 
 func (rep *report) renderPNGsParallel(dash grafana.Dashboard) error {
-	//buffer all panels on a channel
+	// buffer all panels on a channel
 	panels := make(chan grafana.Panel, len(dash.Panels))
 	for _, p := range dash.Panels {
 		panels <- p
 	}
 	close(panels)
 
-	//fetch images in parrallel form Grafana sever.
-	//limit concurrency using a worker pool to avoid overwhelming grafana
-	//for dashboards with many panels.
+	// fetch images in parrallel form Grafana sever.
+	// limit concurrency using a worker pool to avoid overwhelming grafana
+	// for dashboards with many panels.
 	var wg sync.WaitGroup
 	workers := 5
 	wg.Add(workers)
-	errs := make(chan error, len(dash.Panels)) //routines can return errors on a channel
+	errs := make(chan error, len(dash.Panels)) // routines can return errors on a channel
 	for i := 0; i < workers; i++ {
 		go func(panels <-chan grafana.Panel, errs chan<- error) {
 			defer wg.Done()
@@ -173,12 +179,12 @@ func (rep *report) renderPNG(p grafana.Panel) error {
 		return fmt.Errorf("error getting panel %+v: %v", p, err)
 	}
 	defer body.Close()
-
 	err = os.MkdirAll(rep.imgDirPath(), 0777)
 	if err != nil {
 		return fmt.Errorf("error creating img directory:%v", err)
 	}
-	imgFileName := fmt.Sprintf("image%d.png", p.Id)
+	imgFileName := fmt.Sprintf("%s-%d.png", p.Title, p.Id)
+
 	file, err := os.Create(filepath.Join(rep.imgDirPath(), imgFileName))
 	if err != nil {
 		return fmt.Errorf("error creating image file:%v", err)
@@ -188,6 +194,18 @@ func (rep *report) renderPNG(p grafana.Panel) error {
 	_, err = io.Copy(file, body)
 	if err != nil {
 		return fmt.Errorf("error copying body to file:%v", err)
+	}
+	if rep.imagesFolder != "" {
+		file.Seek(0, 0)
+		imgPersist, err := os.Create(filepath.Join(rep.imagesFolder, imgFileName))
+		if err != nil {
+			return fmt.Errorf("error creating image file:%v", err)
+		}
+		defer imgPersist.Close()
+		_, err = io.Copy(imgPersist, file)
+		if err != nil {
+			return fmt.Errorf("error copying body to file:%v", err)
+		}
 	}
 	return nil
 }

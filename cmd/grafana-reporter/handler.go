@@ -35,7 +35,7 @@ import (
 // ServeReportHandler interface facilitates testsing the reportServing http handler
 type ServeReportHandler struct {
 	newGrafanaClient func(url string, apiToken string, variables url.Values, sslCheck bool, gridLayout bool) grafana.Client
-	newReport        func(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool) report.Report
+	newReport        func(g grafana.Client, dashName string, time grafana.TimeRange, texTemplate string, gridLayout bool, imagesFolder string, noPdf bool) report.Report
 }
 
 // RegisterHandlers registers all http.Handler's with their associated routes to the router
@@ -52,7 +52,7 @@ func RegisterHandlers(router *mux.Router, reportServerV4, reportServerV5 ServeRe
 func (h ServeReportHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	log.Print("Reporter called")
 	g := h.newGrafanaClient(*proto+*ip, apiToken(req), dashVariables(req), *sslCheck, *gridLayout)
-	rep := h.newReport(g, dashID(req), time(req), texTemplate(req), *gridLayout)
+	rep := h.newReport(g, dashID(req), time(req), texTemplate(req), *gridLayout, *imagesFolder, *noPdf)
 
 	file, err := rep.Generate()
 	if err != nil {
@@ -61,20 +61,25 @@ func (h ServeReportHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	defer rep.Clean()
-	defer file.Close()
-	addFilenameHeader(w, rep.Title())
+	if file != nil {
+		defer file.Close()
+		addFilenameHeader(w, rep.Title())
 
-	_, err = io.Copy(w, file)
-	if err != nil {
-		log.Println("Error copying data to response:", err)
-		http.Error(w, err.Error(), 500)
-		return
+		_, err = io.Copy(w, file)
+		if err != nil {
+			log.Println("Error copying data to response:", err)
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		log.Println("Report generated correctly")
+	} else {
+		log.Println("No report has been generated")
 	}
-	log.Println("Report generated correctly")
+
 }
 
 func addFilenameHeader(w http.ResponseWriter, title string) {
-	//sanitize title. Http headers should be ASCII
+	// sanitize title. Http headers should be ASCII
 	filename := strconv.QuoteToASCII(title)
 	filename = strings.TrimLeft(filename, "\"")
 	filename = strings.TrimRight(filename, "\"")

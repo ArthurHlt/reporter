@@ -18,6 +18,7 @@ package grafana
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,13 +37,14 @@ type Client interface {
 }
 
 type client struct {
-	url              string
-	getDashEndpoint  func(dashName string) string
-	getPanelEndpoint func(dashName string, vals url.Values) string
-	apiToken         string
-	variables        url.Values
-	sslCheck         bool
-	gridLayout       bool
+	url                   string
+	getDashEndpoint       func(dashName string) string
+	getPanelEndpoint      func(dashName string, vals url.Values) string
+	getDashSearchEndpoint func(dashName string) string
+	apiToken              string
+	variables             url.Values
+	sslCheck              bool
+	gridLayout            bool
 }
 
 var getPanelRetrySleepTime = time.Duration(10) * time.Second
@@ -62,7 +64,10 @@ func NewV4Client(grafanaURL string, apiToken string, variables url.Values, sslCh
 	getPanelEndpoint := func(dashName string, vals url.Values) string {
 		return fmt.Sprintf("%s/render/dashboard-solo/db/%s?%s", grafanaURL, dashName, vals.Encode())
 	}
-	return client{grafanaURL, getDashEndpoint, getPanelEndpoint, apiToken, variables, sslCheck, gridLayout}
+	getDashSearchEndpoint := func(dashName string) string {
+		return fmt.Sprintf("%s/api/search?query=%s&", grafanaURL, url.QueryEscape(dashName))
+	}
+	return client{grafanaURL, getDashEndpoint, getPanelEndpoint, getDashSearchEndpoint, apiToken, variables, sslCheck, gridLayout}
 }
 
 // NewV5Client creates a new Grafana 5 Client. If apiToken is the empty string,
@@ -80,7 +85,10 @@ func NewV5Client(grafanaURL string, apiToken string, variables url.Values, sslCh
 	getPanelEndpoint := func(dashName string, vals url.Values) string {
 		return fmt.Sprintf("%s/render/d-solo/%s/_?%s", grafanaURL, dashName, vals.Encode())
 	}
-	return client{grafanaURL, getDashEndpoint, getPanelEndpoint, apiToken, variables, sslCheck, gridLayout}
+	getDashSearchEndpoint := func(dashName string) string {
+		return fmt.Sprintf("%s/api/search?query=%s", grafanaURL, url.QueryEscape(dashName))
+	}
+	return client{grafanaURL, getDashEndpoint, getPanelEndpoint, getDashSearchEndpoint, apiToken, variables, sslCheck, gridLayout}
 }
 
 func (g client) GetDashboard(dashName string) (Dashboard, error) {
@@ -109,11 +117,36 @@ func (g client) GetDashboard(dashName string) (Dashboard, error) {
 		return Dashboard{}, fmt.Errorf("error reading getDashboard response body from %v: %v", dashURL, err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != 200 && resp.StatusCode != 404 && resp.StatusCode != 401 {
 		return Dashboard{}, fmt.Errorf("error obtaining dashboard from %v. Got Status %v, message: %v ", dashURL, resp.Status, string(body))
 	}
 
-	return NewDashboard(body, g.variables), nil
+	if resp.StatusCode == 404 || resp.StatusCode == 401 {
+		searchUrl := g.getDashSearchEndpoint(dashName)
+		req, err = http.NewRequest("GET", searchUrl, nil)
+		if err != nil {
+			return Dashboard{}, fmt.Errorf("error creating getDashboard search request for %v: %v", searchUrl, err)
+		}
+		req.Header.Add("Authorization", "Bearer "+g.apiToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			return Dashboard{}, fmt.Errorf("error executing getDashboard request for %v: %v", searchUrl, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return Dashboard{}, fmt.Errorf("error obtaining dashboard from %v. Got Status %v, message: %v ", searchUrl, resp.Status, string(body))
+		}
+		var result []DashboardSearch
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		if err != nil || len(result) == 0 {
+			return Dashboard{}, fmt.Errorf("error executing getDashboard request for %v: %v", searchUrl, err)
+		}
+		return g.GetDashboard(result[0].UID)
+	}
+
+	dashboard := NewDashboard(body, g.variables)
+	dashboard.UID = dashName
+	return dashboard, nil
 }
 
 func (g client) GetPanelPng(p Panel, dashName string, t TimeRange) (io.ReadCloser, error) {
